@@ -1,0 +1,46 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Checkout repository code
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    # 2. Authenticate to GCP using Service Account Key
+    - name: Google Cloud Auth
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    # 3. Set up Cloud SDK
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+
+    # 4. Authorize Docker for Artifact Registry
+    - name: Configure Docker
+      run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+    # 5. Build and Push Container Image
+    - name: Build & Push Docker Image
+      run: |
+        IMAGE_TAG="us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/heart-disease-repo/heart-disease-api:${{ github.sha }}"
+        docker build -t $IMAGE_TAG .
+        docker push $IMAGE_TAG
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+    # 6. Deploy New Revision to GCP Cloud Run
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy heart-disease-api \
+          --image ${{ env.IMAGE_TAG }} \
+          --region us-central1 \
+          --platform managed \
+          --allow-unauthenticated \
+          --port 8000
