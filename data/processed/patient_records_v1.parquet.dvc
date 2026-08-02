@@ -1,0 +1,5 @@
+outs:
+- md5: 6ef58a9e5d590bcc2b3d28e19c28773f
+  size: 291561
+  hash: md5
+  path: patient_records_v1.parquet
