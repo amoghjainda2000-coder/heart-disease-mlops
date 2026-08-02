@@ -72,6 +72,7 @@ def train_svc_challenger():
             registered_model_name="HeartDisease_SVC"
         )
         print("✅ CHALLENGER SVC Model logged and registered in MLflow!")
+        print("✅ CHALLENGER SVC Model logged and registered in MLflow!")
 
 if __name__ == "__main__":
     train_svc_challenger()
