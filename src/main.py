@@ -18,6 +18,7 @@ MODELS_DIR = "models"
 try:
     champion_model = joblib.load(os.path.join(MODELS_DIR, "champion_model.pkl"))
     challenger_model = joblib.load(os.path.join(MODELS_DIR, "challenger_model.pkl"))
+    challenger_model_v2 = joblib.load(os.path.join(MODELS_DIR, "model_svc.pkl"))
     feature_columns = joblib.load(os.path.join(MODELS_DIR, "feature_columns.pkl"))
     scaler = joblib.load(os.path.join(MODELS_DIR, "scaler.pkl"))
     print("[INFO] All model artifacts successfully loaded!")
@@ -25,6 +26,7 @@ except Exception as e:
     print(f" Warning: Model artifacts missing or failed to load: {e}")
     champion_model = None
     challenger_model = None
+    challenger_model_v2 = None
 
 
 # ----------------------------------------------------
@@ -115,6 +117,25 @@ def predict_challenger(patient: PatientData):
 
     return {
         "model": "Challenger (Logistic Regression)",
+        "prediction": prediction,
+        "risk_status": "High Risk" if prediction == 1 else "Low Risk",
+        "probability": round(probability, 4),
+    }
+
+@app.post("/predict/challenger_v2")
+def predict_challenger(patient: PatientData):
+    """Prediction endpoint using CHALLENGER Model V2 (SVM)."""
+    if challenger_model_v2 is None or scaler is None:
+        raise HTTPException(status_code=500, detail="Challenger model unavailable")
+
+    df_input = preprocess_patient_input(patient)
+    df_scaled = scaler.transform(df_input)
+
+    prediction = int(challenger_model_v2.predict(df_scaled)[0])
+    probability = float(challenger_model_v2.predict_proba(df_scaled)[0][1])
+
+    return {
+        "model": "Challenger_V2 (SVM)",
         "prediction": prediction,
         "risk_status": "High Risk" if prediction == 1 else "Low Risk",
         "probability": round(probability, 4),
