@@ -1,18 +1,58 @@
 import os
+import sys
+import time
+import uuid
+import json
+import logging
+from datetime import datetime, timezone
+
 import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+# ----------------------------------------------------
+# 0. Setup Structured Logger for Cloud Logging
+# ----------------------------------------------------
+logger = logging.getLogger("ml_inference_logger")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+logger.addHandler(handler)
+
+def log_inference_event(
+    request_id: str,
+    model_name: str,
+    raw_input: dict,
+    prediction: int,
+    probability: float,
+    latency_ms: float
+):
+    """
+    Formats prediction payload as structured JSON and streams to stdout.
+    GCP Cloud Logging automatically ingests these fields into BigQuery / Logs Explorer.
+    """
+    log_payload = {
+        "event_type": "inference_log",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "model_used": model_name,
+        "input_features": raw_input,
+        "prediction": prediction,
+        "probability": probability,
+        "latency_ms": latency_ms
+    }
+    logger.info(json.dumps(log_payload))
+
+
+# ----------------------------------------------------
+# 1. FastAPI App Initialization & Artifact Loading
+# ----------------------------------------------------
 app = FastAPI(
     title="Heart Disease Risk Prediction API",
     description="Production MLOps Inference Service supporting Champion & Challenger models",
     version="1.0.0",
 )
 
-# ----------------------------------------------------
-# 1. Load Artifacts on Service Startup
-# ----------------------------------------------------
 MODELS_DIR = "models"
 
 try:
@@ -23,14 +63,14 @@ try:
     scaler = joblib.load(os.path.join(MODELS_DIR, "scaler.pkl"))
     print("[INFO] All model artifacts successfully loaded!")
 except Exception as e:
-    print(f" Warning: Model artifacts missing or failed to load: {e}")
+    print(f"[WARNING] Model artifacts missing or failed to load: {e}")
     champion_model = None
     challenger_model = None
     challenger_model_v2 = None
 
 
 # ----------------------------------------------------
-# 2. Define Pydantic Schema for Input Request
+# 2. Pydantic Input Schema & Preprocessing
 # ----------------------------------------------------
 class PatientData(BaseModel):
     age: int = Field(..., example=52)
@@ -65,17 +105,15 @@ def preprocess_patient_input(data: PatientData) -> pd.DataFrame:
     input_dict = data.model_dump()
     df_raw = pd.DataFrame([input_dict])
 
-    # Categorical encoding matching training phase
     categorical_cols = ["sex", "chest_pain_type", "smoker_status"]
     df_encoded = pd.get_dummies(df_raw, columns=categorical_cols, drop_first=True)
 
-    # Reindex to guarantee exact order and missing dummy columns
     df_aligned = df_encoded.reindex(columns=feature_columns, fill_value=0)
     return df_aligned
 
 
 # ----------------------------------------------------
-# 3. Define API Endpoints
+# 3. API Endpoints
 # ----------------------------------------------------
 @app.get("/health")
 def health_check():
@@ -91,11 +129,27 @@ def predict_champion(patient: PatientData):
     if champion_model is None:
         raise HTTPException(status_code=500, detail="Champion model unavailable")
 
+    start_time = time.time()
+    request_id = str(uuid.uuid4())
+    raw_input = patient.model_dump()
+
     df_input = preprocess_patient_input(patient)
     prediction = int(champion_model.predict(df_input)[0])
     probability = float(champion_model.predict_proba(df_input)[0][1])
 
+    latency_ms = round((time.time() - start_time) * 1000, 2)
+
+    log_inference_event(
+        request_id=request_id,
+        model_name="Champion (Random Forest)",
+        raw_input=raw_input,
+        prediction=prediction,
+        probability=round(probability, 4),
+        latency_ms=latency_ms
+    )
+
     return {
+        "request_id": request_id,
         "model": "Champion (Random Forest)",
         "prediction": prediction,
         "risk_status": "High Risk" if prediction == 1 else "Low Risk",
@@ -109,24 +163,45 @@ def predict_challenger(patient: PatientData):
     if challenger_model is None or scaler is None:
         raise HTTPException(status_code=500, detail="Challenger model unavailable")
 
+    start_time = time.time()
+    request_id = str(uuid.uuid4())
+    raw_input = patient.model_dump()
+
     df_input = preprocess_patient_input(patient)
     df_scaled = scaler.transform(df_input)
 
     prediction = int(challenger_model.predict(df_scaled)[0])
     probability = float(challenger_model.predict_proba(df_scaled)[0][1])
 
+    latency_ms = round((time.time() - start_time) * 1000, 2)
+
+    log_inference_event(
+        request_id=request_id,
+        model_name="Challenger (Logistic Regression)",
+        raw_input=raw_input,
+        prediction=prediction,
+        probability=round(probability, 4),
+        latency_ms=latency_ms
+    )
+
     return {
+        "request_id": request_id,
         "model": "Challenger (Logistic Regression)",
         "prediction": prediction,
         "risk_status": "High Risk" if prediction == 1 else "Low Risk",
         "probability": round(probability, 4),
     }
 
+
 @app.post("/predict/challenger_v2")
-def predict_challenger(patient: PatientData):
+def predict_challenger_v2(patient: PatientData):
     """Prediction endpoint using CHALLENGER Model V2 (SVM)."""
     if challenger_model_v2 is None or scaler is None:
-        raise HTTPException(status_code=500, detail="Challenger model unavailable")
+        raise HTTPException(status_code=500, detail="Challenger model v2 unavailable")
+
+    start_time = time.time()
+    request_id = str(uuid.uuid4())
+    raw_input = patient.model_dump()
 
     df_input = preprocess_patient_input(patient)
     df_scaled = scaler.transform(df_input)
@@ -134,7 +209,19 @@ def predict_challenger(patient: PatientData):
     prediction = int(challenger_model_v2.predict(df_scaled)[0])
     probability = float(challenger_model_v2.predict_proba(df_scaled)[0][1])
 
+    latency_ms = round((time.time() - start_time) * 1000, 2)
+
+    log_inference_event(
+        request_id=request_id,
+        model_name="Challenger_V2 (SVM)",
+        raw_input=raw_input,
+        prediction=prediction,
+        probability=round(probability, 4),
+        latency_ms=latency_ms
+    )
+
     return {
+        "request_id": request_id,
         "model": "Challenger_V2 (SVM)",
         "prediction": prediction,
         "risk_status": "High Risk" if prediction == 1 else "Low Risk",
